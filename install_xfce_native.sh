@@ -1070,7 +1070,8 @@ echo -e "3. Uncheck the hardware acceleration option\n"
 
 echo -e "${YELLOW}Installation complete! Use 'start' to launch your desktop environment.${NC}\n"
 
-
-source $PREFIX/etc/bash.bashrc
-termux-reload-settings
+log_step "Reloading Termux settings"
+if ! termux-reload-settings; then
+    print_status "warn" "Could not reload Termux settings automatically; restart Termux if font/settings do not refresh"
+fi
 rm -f install_xfce_native.sh

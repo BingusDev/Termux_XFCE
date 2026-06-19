@@ -308,7 +308,7 @@ fi
 
 validate_commands termux-x11 pulseaudio
 if command -v pm >/dev/null 2>&1 && ! pm path com.termux.x11 >/dev/null 2>&1; then
-    fail "Termux:X11 Android app is not installed. Install it from https://github.com/termux/termux-x11/releases and rerun this installer."
+    print_status "warn" "Could not verify the Termux:X11 Android app with package manager; continuing because the termux-x11 command is installed"
 fi
 
 # Set aliases

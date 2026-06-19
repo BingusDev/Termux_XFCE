@@ -1,9 +1,10 @@
 # Termux XFCE Desktop Setup
 
-This repository provides a script to set up an XFCE desktop environment and a Debian proot installation within Termux. The setup utilizes the Termux-X11 server, which will be installed during the process. You will be prompted to allow Termux to install the corresponding Android APK.
+This repository provides a script to set up an XFCE desktop environment and a Debian or Ubuntu proot installation within Termux. The setup uses Termux:X11; install the Android app before launching the desktop.
 
 ## Key Features
 - **User-Friendly Setup**: Simply choose your username and follow the on-screen prompts.
+- **Distro Choice**: Install either Debian latest or Ubuntu 24.04 with proot-distro.
 - **Storage Requirements**: Approximately 4GB of storage space is required. Note that additional applications will consume more space.
 - **Detailed Documentation**: Please review the full README for comprehensive information about this setup.
 
@@ -40,30 +41,36 @@ start
 
 This command initiates a Termux-X11 session, starts the XFCE4 desktop, and opens the Termux-X11 app directly into the desktop.
 
-To access the Debian proot environment from the terminal, use:
+To access the selected proot environment from the terminal, use the command shown at the end of the installer. Debian uses:
 
 ```bash
 debian
 ```
 
-Note: The display is pre-configured in the Debian proot environment, allowing you to launch GUI applications directly from the terminal.
+Ubuntu 24.04 uses:
+
+```bash
+ubuntu
+```
+
+Note: The display is pre-configured in the proot environment, allowing you to launch GUI applications directly from the terminal.
 
 ## Hardware Acceleration & Proot
 
 Several aliases are provided to simplify launching applications:
 
 ### Termux XFCE:
-- `prun`: Execute commands from the Debian proot environment directly in the Termux terminal without entering the proot shell.
-- `zrun`: Launch applications in Debian proot with hardware acceleration.
+- `prun`: Execute commands from the selected proot environment directly in the Termux terminal without entering the proot shell.
+- `zrun`: Launch applications in the selected proot with hardware acceleration.
 - `zrunhud`: Launch applications with hardware acceleration and FPS HUD.
 
-### Debian Proot:
-`debian` To enter the Debian proot environment, from there, you can install additional software using `sudo apt`.
+### Proot:
+`debian` or `ubuntu` enters the selected proot environment. From there, you can install additional software using `sudo apt`.
 
 ## Additional Utilities
 
-- `cp2menu`: Copy `.desktop` files from Debian proot to the Termux XFCE menu for easy access.
-- `app-installer`: Easy to use GUI app to manage installing additional apps not available in Termux or Debian repositories.
+- `cp2menu`: Copy `.desktop` files from proot to the Termux XFCE menu for easy access.
+- `app-installer`: Easy to use GUI app to manage installing additional apps not available in Termux or proot repositories.
 
 ## Troubleshooting
 

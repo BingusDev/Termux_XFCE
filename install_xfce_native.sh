@@ -14,6 +14,7 @@ NC='\033[0m' # No Color
 # Log file for debugging
 LOG_FILE="$HOME/termux_setup.log"
 exec 2>>"$LOG_FILE"
+LAST_STEP="Starting installer"
 
 # Temporary directory for setup
 TEMP_DIR=$(mktemp -d)
@@ -31,11 +32,97 @@ print_status() {
     fi
 }
 
+log_step() {
+    LAST_STEP="$1"
+    echo -e "\n${BLUE}[*]${NC} $LAST_STEP"
+}
+
+fail() {
+    local message=$1
+    echo -e "${RED}ERROR: $message${NC}"
+    echo "ERROR: $message" >> "$LOG_FILE"
+    exit 1
+}
+
+run_step() {
+    local message=$1
+    shift
+    log_step "$message"
+    "$@" || fail "$message failed."
+}
+
+append_once() {
+    local file=$1
+    local line=$2
+    mkdir -p "$(dirname "$file")"
+    touch "$file"
+    grep -Fxq "$line" "$file" || echo "$line" >> "$file"
+}
+
+validate_commands() {
+    local missing=()
+    local cmd
+
+    for cmd in "$@"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        fail "Missing required command(s): ${missing[*]}. Install them with: pkg install ${missing[*]}"
+    fi
+}
+
+proot_rootfs_path() {
+    local rootfs_path
+
+    for rootfs_path in \
+        "$PREFIX/var/lib/proot-distro/installed-rootfs/$distro_alias" \
+        "$PREFIX/var/lib/proot-distro/containers/$distro_alias/rootfs"; do
+        if [ -d "$rootfs_path" ]; then
+            echo "$rootfs_path"
+            return 0
+        fi
+    done
+
+    echo "$PREFIX/var/lib/proot-distro/installed-rootfs/$distro_alias"
+}
+
+proot_login() {
+    pd login "$distro_alias" --shared-tmp -- env DISPLAY=:0 "$@"
+}
+
+configure_sudoers() {
+    log_step "Configuring sudo in $distro_alias rootfs"
+
+    proot_login bash -c 'command -v sudo >/dev/null 2>&1 || (apt update && apt install -y sudo)' \
+        || fail "Failed to configure sudoers. sudo package could not be installed."
+
+    proot_login bash -c '
+set -e
+if [ ! -f /etc/sudoers ]; then
+    cat > /etc/sudoers <<EOF
+root ALL=(ALL:ALL) ALL
+%sudo ALL=(ALL:ALL) ALL
+EOF
+fi
+chmod 440 /etc/sudoers
+' || fail "Failed to configure sudoers. /etc/sudoers could not be created or repaired."
+
+    proot_login bash -c "grep -Fxq '$username ALL=(ALL) NOPASSWD:ALL' /etc/sudoers || (chmod u+w /etc/sudoers && echo '$username ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers)" \
+        || fail "Failed to configure sudoers. Could not add user '$username'."
+
+    proot_login chmod 440 /etc/sudoers \
+        || fail "Failed to configure sudoers. Could not set /etc/sudoers permissions."
+}
+
 # Function to clean up on exit
 finish() {
     local ret=$?
     if [ $ret -ne 0 ] && [ $ret -ne 130 ]; then
-        echo -e "${RED}ERROR: An issue occurred. Please check $LOG_FILE for details.${NC}"
+        echo -e "${RED}ERROR: An issue occurred during: $LAST_STEP${NC}"
+        echo -e "${RED}Please check $LOG_FILE for details.${NC}"
     fi
     rm -rf "$TEMP_DIR"
 }
@@ -55,7 +142,7 @@ detect_termux() {
         print_status "ok" "Running on Android $(getprop ro.build.version.release)"
     else
         print_status "error" "Not running on Android"
-        ((errors++))
+        ((errors+=1))
     fi
 
     # Check architecture
@@ -64,7 +151,7 @@ detect_termux() {
         print_status "ok" "Architecture: $arch"
     else
         print_status "error" "Unsupported architecture: $arch (requires aarch64)"
-        ((errors++))
+        ((errors+=1))
     fi
 
     # Check for required directories
@@ -72,7 +159,7 @@ detect_termux() {
         print_status "ok" "Termux PREFIX directory found"
     else
         print_status "error" "Termux PREFIX directory not found"
-        ((errors++))
+        ((errors+=1))
     fi
 
     # Check available storage space
@@ -120,11 +207,11 @@ main() {
     fi
 
     echo -e "\n${GREEN}This will install XFCE native desktop in Termux"
-    echo -e "${GREEN}A Debian proot-distro is also installed for additional software"
+    echo -e "${GREEN}A Debian or Ubuntu proot-distro is also installed for additional software"
     echo -e "${GREEN}while also enabling hardware acceleration"
     echo -e "${GREEN}This setup has been tested on a Samsung Galaxy S24 Ultra"
     echo -e "${GREEN}It should run on most phones however.${NC}"
-    echo -e "\n${RED}Please install termux-x11: ${YELLOW}https://github.com/termux/termux-x11/releases"
+    echo -e "\n${RED}Please install the Termux:X11 Android app: ${YELLOW}https://github.com/termux/termux-x11/releases"
     echo -e "\n${YELLOW}Press Enter to continue or Ctrl+C to cancel${NC}"
     
     read -r
@@ -132,6 +219,31 @@ main() {
     # Continue with your existing installation code here
     echo -n "Please enter username for proot installation: " > /dev/tty
     read username < /dev/tty
+    if [[ ! "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        fail "Invalid username '$username'. Use lowercase letters, numbers, underscores, or hyphens, starting with a letter or underscore."
+    fi
+
+    echo -e "\n${YELLOW}Select proot distro:${NC}"
+    echo "1) Debian latest"
+    echo "2) Ubuntu 24.04"
+    echo -n "Choice [1]: " > /dev/tty
+    read distro_choice < /dev/tty
+
+    case "${distro_choice:-1}" in
+        1)
+            distro_image="debian:latest"
+            distro_alias="debian"
+            distro_label="Debian"
+            ;;
+        2)
+            distro_image="ubuntu:24.04"
+            distro_alias="ubuntu"
+            distro_label="Ubuntu 24.04"
+            ;;
+        *)
+            fail "Invalid distro selection '$distro_choice'. Choose 1 for Debian latest or 2 for Ubuntu 24.04."
+            ;;
+    esac
 
     # Change repository
 if ! termux-change-repo; then
@@ -165,7 +277,7 @@ else
 fi
 
 # Install core dependencies
-dependencies=('wget' 'proot-distro' 'x11-repo' 'tur-repo' 'pulseaudio' 'git')
+dependencies=('wget' 'curl' 'tar' 'unzip' 'proot-distro' 'x11-repo' 'tur-repo' 'pulseaudio' 'git')
 missing_deps=()
 for dep in "${dependencies[@]}"; do
     if ! command -v "$dep" &> /dev/null; then
@@ -180,6 +292,8 @@ if [ "${#missing_deps[@]}" -gt 0 ]; then
     fi
 fi
 
+validate_commands proot-distro pd pulseaudio wget curl tar unzip git
+
 # Create default directories
 mkdir -p "$HOME/Desktop" "$HOME/Downloads" "$HOME/.fonts" "$HOME/.config" "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/" "$HOME/.config/autostart/" "$HOME/.config/gtk-3.0/" "$HOME/.config/xfce4/terminal/" "$HOME/.config/xfce4/panel/" "$HOME/.config/xfce4/panel/launcher-7" "$HOME/.config/xfce4/panel/launcher-10" "$HOME/.config/xfce4/panel/launcher-11"
 #ln -s /storage/emulated/0/Music $HOME/Music
@@ -192,38 +306,47 @@ if ! pkg install -y "${xfce_packages[@]}" -o Dpkg::Options::="--force-confold"; 
     exit 1
 fi
 
-# Set aliases
-echo "
-alias debian='proot-distro login debian --user $username --shared-tmp'
-alias ls='eza -lF --icons'
-alias cat='bat '
+validate_commands termux-x11 pulseaudio
+if command -v pm >/dev/null 2>&1 && ! pm path com.termux.x11 >/dev/null 2>&1; then
+    fail "Termux:X11 Android app is not installed. Install it from https://github.com/termux/termux-x11/releases and rerun this installer."
+fi
 
-eval "$(starship init bash)"
-" >> $PREFIX/etc/bash.bashrc
+# Set aliases
+append_once "$PREFIX/etc/bash.bashrc" "alias $distro_alias='proot-distro login $distro_alias --user $username --shared-tmp'"
+append_once "$PREFIX/etc/bash.bashrc" "alias ls='eza -lF --icons'"
+append_once "$PREFIX/etc/bash.bashrc" "alias cat='bat '"
+append_once "$PREFIX/etc/bash.bashrc" 'eval "$(starship init bash)"'
 
 # Download starship theme
 curl -o $HOME/.config/starship.toml https://raw.githubusercontent.com/phoenixbyrd/Termux_XFCE/refs/heads/main/starship.toml
 sed -i "s/phoenixbyrd/$username/" $HOME/.config/starship.toml
 
 # Download Wallpaper
-wget https://raw.githubusercontent.com/phoenixbyrd/Termux_XFCE/main/dark_waves.png
-mv dark_waves.png $PREFIX/share/backgrounds/xfce/
+wget -O dark_waves.png https://raw.githubusercontent.com/phoenixbyrd/Termux_XFCE/main/dark_waves.png
+mkdir -p "$PREFIX/share/backgrounds/xfce"
+mv -f dark_waves.png "$PREFIX/share/backgrounds/xfce/"
 
 # Install WhiteSur-Dark Theme
-wget https://github.com/vinceliuice/WhiteSur-gtk-theme/archive/refs/tags/2023-04-26.zip
-unzip 2023-04-26.zip
+rm -rf WhiteSur-gtk-theme-2023-04-26 WhiteSur-Dark 2023-04-26.zip
+wget -O 2023-04-26.zip https://github.com/vinceliuice/WhiteSur-gtk-theme/archive/refs/tags/2023-04-26.zip
+unzip -o 2023-04-26.zip
 tar -xf WhiteSur-gtk-theme-2023-04-26/release/WhiteSur-Dark-44-0.tar.xz
-mv WhiteSur-Dark/ $PREFIX/share/themes/
+mkdir -p "$PREFIX/share/themes"
+rm -rf "$PREFIX/share/themes/WhiteSur-Dark"
+mv WhiteSur-Dark/ "$PREFIX/share/themes/"
 rm -rf WhiteSur*
-rm 2023-04-26.zip
+rm -f 2023-04-26.zip
 
 # Install Fluent Cursor Icon Theme
-wget https://github.com/vinceliuice/Fluent-icon-theme/archive/refs/tags/2023-02-01.zip
-unzip 2023-02-01.zip
-mv Fluent-icon-theme-2023-02-01/cursors/dist $PREFIX/share/icons/ 
-mv Fluent-icon-theme-2023-02-01/cursors/dist-dark $PREFIX/share/icons/
-rm -rf $HOME//Fluent*
-rm 2023-02-01.zip
+rm -rf Fluent-icon-theme-2023-02-01 2023-02-01.zip
+wget -O 2023-02-01.zip https://github.com/vinceliuice/Fluent-icon-theme/archive/refs/tags/2023-02-01.zip
+unzip -o 2023-02-01.zip
+mkdir -p "$PREFIX/share/icons"
+rm -rf "$PREFIX/share/icons/dist" "$PREFIX/share/icons/dist-dark"
+mv Fluent-icon-theme-2023-02-01/cursors/dist "$PREFIX/share/icons/"
+mv Fluent-icon-theme-2023-02-01/cursors/dist-dark "$PREFIX/share/icons/"
+rm -rf "$HOME"/Fluent*
+rm -f 2023-02-01.zip
 
 # Create xsettings.xml for Termux
 cat <<'EOF' > $HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
@@ -528,7 +651,7 @@ EOF
 # Create bookmarks with custom name
 cat <<EOF > $HOME/.config/gtk-3.0/bookmarks
 file:////data/data/com.termux/files/home/Downloads
-file:///data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/debian/home/$username Debian Home
+file:///data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/$distro_alias/home/$username $distro_label Home
 file:////data/data/com.termux/files/home/storage/shared/ Android Storage
 EOF
 
@@ -626,23 +749,24 @@ X-XFCE-Source=file:///data/data/com.termux/files/home/Desktop/xfce4-terminal-emu
 EOF
 
 # Setup Fonts
-wget https://github.com/microsoft/cascadia-code/releases/download/v2111.01/CascadiaCode-2111.01.zip
-unzip CascadiaCode-2111.01.zip
+wget -O CascadiaCode-2111.01.zip https://github.com/microsoft/cascadia-code/releases/download/v2111.01/CascadiaCode-2111.01.zip
+unzip -o CascadiaCode-2111.01.zip
 mv otf/static/* .fonts/ && rm -rf otf
 mv ttf/* .fonts/ && rm -rf ttf/
 rm -rf woff2/ && rm -rf CascadiaCode-2111.01.zip
 
-wget https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/Meslo.zip
-unzip Meslo.zip
+wget -O Meslo.zip https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/Meslo.zip
+unzip -o Meslo.zip
 mv *.ttf .fonts/
-rm Meslo.zip
-rm LICENSE.txt
-rm readme.md
+rm -f Meslo.zip
+rm -f LICENSE.txt
+rm -f readme.md
 
-wget https://github.com/phoenixbyrd/Termux_XFCE/raw/main/NotoColorEmoji-Regular.ttf
+wget -O NotoColorEmoji-Regular.ttf https://github.com/phoenixbyrd/Termux_XFCE/raw/main/NotoColorEmoji-Regular.ttf
 mv NotoColorEmoji-Regular.ttf .fonts
 
-wget https://github.com/phoenixbyrd/Termux_XFCE/raw/main/font.ttf
+wget -O font.ttf https://github.com/phoenixbyrd/Termux_XFCE/raw/main/font.ttf
+mkdir -p "$HOME/.termux"
 mv font.ttf .termux/font.ttf
 
 # Create start script
@@ -667,6 +791,16 @@ fi
 export PULSE_SERVER=127.0.0.1
 
 # Prepare termux-x11 session
+if ! command -v termux-x11 >/dev/null 2>&1; then
+    echo "termux-x11 command not found. Install termux-x11-nightly in Termux and the Termux:X11 Android app."
+    exit 1
+fi
+
+if [ -z "${TMPDIR:-}" ] || [ ! -d "$TMPDIR" ]; then
+    echo "TMPDIR is not set correctly. Termux:X11 requires the shared Termux tmp directory."
+    exit 1
+fi
+
 export XDG_RUNTIME_DIR=${TMPDIR}
 termux-x11 :0 >/dev/null &
 
@@ -740,35 +874,48 @@ chmod +x $HOME/Desktop/kill_termux_x11.desktop
 mv $HOME/Desktop/kill_termux_x11.desktop $PREFIX/share/applications
 
 # Create prun script
-cat <<'EOF' > $PREFIX/bin/prun
+cat <<EOF > $PREFIX/bin/prun
 #!/bin/bash
-varname=$(basename $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/*)
-pd login debian --user $varname --shared-tmp -- env DISPLAY=:0 $@
+distro_alias="$distro_alias"
+rootfs="\$PREFIX/var/lib/proot-distro/installed-rootfs/\$distro_alias"
+varname=\$(basename "\$rootfs"/home/*)
+pd login "\$distro_alias" --user "\$varname" --shared-tmp -- env DISPLAY=:0 "\$@"
 
 EOF
 chmod +x $PREFIX/bin/prun
 
 # Create zrun script
-cat <<'EOF' > $PREFIX/bin/zrun
+cat <<EOF > $PREFIX/bin/zrun
 #!/bin/bash
-varname=$(basename $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/*)
-pd login debian --user $varname --shared-tmp -- env DISPLAY=:0 MESA_LOADER_DRIVER_OVERRIDE=zink TU_DEBUG=noconform $@
+distro_alias="$distro_alias"
+rootfs="\$PREFIX/var/lib/proot-distro/installed-rootfs/\$distro_alias"
+varname=\$(basename "\$rootfs"/home/*)
+pd login "\$distro_alias" --user "\$varname" --shared-tmp -- env DISPLAY=:0 MESA_LOADER_DRIVER_OVERRIDE=zink TU_DEBUG=noconform "\$@"
 
 EOF
 chmod +x $PREFIX/bin/zrun
 
 # Create zrunhud script
-cat <<'EOF' > $PREFIX/bin/zrunhud
+cat <<EOF > $PREFIX/bin/zrunhud
 #!/bin/bash
-varname=$(basename $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/*)
-pd login debian --user $varname --shared-tmp -- env DISPLAY=:0 MESA_LOADER_DRIVER_OVERRIDE=zink TU_DEBUG=noconform GALLIUM_HUD=fps $@
+distro_alias="$distro_alias"
+rootfs="\$PREFIX/var/lib/proot-distro/installed-rootfs/\$distro_alias"
+varname=\$(basename "\$rootfs"/home/*)
+pd login "\$distro_alias" --user "\$varname" --shared-tmp -- env DISPLAY=:0 MESA_LOADER_DRIVER_OVERRIDE=zink TU_DEBUG=noconform GALLIUM_HUD=fps "\$@"
 
 EOF
 chmod +x $PREFIX/bin/zrunhud
 
 # App Installer
 
-git clone https://github.com/phoenixbyrd/App-Installer.git $HOME/.config/App-Installer
+if [ -d "$HOME/.config/App-Installer/.git" ]; then
+    if ! git -C "$HOME/.config/App-Installer" pull --ff-only; then
+        print_status "warn" "Could not update existing App-Installer checkout; continuing with local copy"
+    fi
+else
+    rm -rf "$HOME/.config/App-Installer"
+    git clone https://github.com/phoenixbyrd/App-Installer.git "$HOME/.config/App-Installer"
+fi
 chmod +x $HOME/.config/App-Installer/*
 
 echo "[Desktop Entry]
@@ -788,7 +935,7 @@ cp $HOME/Desktop/App-Installer.desktop $PREFIX/share/applications
 
 # cp2menu
 
-wget https://github.com/phoenixbyrd/Termux_XFCE/raw/refs/heads/main/cp2menu -O $PREFIX/bin/cp2menu
+wget -O "$PREFIX/bin/cp2menu" https://github.com/phoenixbyrd/Termux_XFCE/raw/refs/heads/main/cp2menu
 chmod +x $PREFIX/bin/cp2menu
 
 echo "[Desktop Entry]
@@ -805,68 +952,86 @@ StartupNotify=false
 " > $PREFIX/share/applications/cp2menu.desktop
 chmod +x $PREFIX/share/applications/cp2menu.desktop
 
-# Install Debian proot
+# Install proot packages
 pkgs_proot=('sudo' 'onboard' 'conky-all' 'flameshot')
 
-# Install Debian proot
-pd install debian
-pd login debian --shared-tmp -- env DISPLAY=:0 apt update
-pd login debian --shared-tmp -- env DISPLAY=:0 apt upgrade -y
-pd login debian --shared-tmp -- env DISPLAY=:0 apt install "${pkgs_proot[@]}" -y -o Dpkg::Options::="--force-confold"
+# Install selected proot rootfs
+proot_rootfs=$(proot_rootfs_path)
+if [ -d "$proot_rootfs" ]; then
+    print_status "ok" "$distro_label rootfs already installed; reusing it"
+else
+    run_step "Installing $distro_label rootfs" pd install "$distro_image"
+    proot_rootfs=$(proot_rootfs_path)
+    [ -d "$proot_rootfs" ] || fail "Installed $distro_label, but could not find its rootfs directory."
+fi
 
-# Create user
-pd login debian --shared-tmp -- env DISPLAY=:0 groupadd storage
-pd login debian --shared-tmp -- env DISPLAY=:0 groupadd wheel
-pd login debian --shared-tmp -- env DISPLAY=:0 useradd -m -g users -G wheel,audio,video,storage -s /bin/bash "$username"
+run_step "Updating $distro_label package lists" proot_login apt update
+run_step "Upgrading $distro_label packages" proot_login apt upgrade -y
+run_step "Installing $distro_label desktop helper packages" proot_login apt install "${pkgs_proot[@]}" -y -o Dpkg::Options::="--force-confold"
 
-# Add user to sudoers
-chmod u+rw $PREFIX/var/lib/proot-distro/installed-rootfs/debian/etc/sudoers
-echo "$username ALL=(ALL) NOPASSWD:ALL" | tee -a $PREFIX/var/lib/proot-distro/installed-rootfs/debian/etc/sudoers > /dev/null
-chmod u-w  $PREFIX/var/lib/proot-distro/installed-rootfs/debian/etc/sudoers
+# Create user and groups idempotently
+proot_login bash -c 'for group in users storage wheel audio video; do getent group "$group" >/dev/null || groupadd "$group"; done' \
+    || fail "Failed to create required groups in $distro_label."
+proot_login bash -c "id -u '$username' >/dev/null 2>&1 || useradd -m -g users -G wheel,audio,video,storage -s /bin/bash '$username'" \
+    || fail "Failed to create user '$username' in $distro_label."
+proot_login usermod -aG wheel,audio,video,storage "$username" \
+    || fail "Failed to update groups for user '$username' in $distro_label."
 
-# Set proot DISPLAY
-echo "export DISPLAY=:0" >> $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/$username/.bashrc
+configure_sudoers
 
-# Set aliases
-echo "
-alias ls='eza -lF --icons'
-alias cat='bat '
+proot_home="$proot_rootfs/home/$username"
+mkdir -p "$proot_home"
 
-eval "$(starship init bash)"
-" >> $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/$username/.bashrc
+cat <<EOF > "$HOME/.config/gtk-3.0/bookmarks"
+file:////data/data/com.termux/files/home/Downloads
+file://$proot_home $distro_label Home
+file:////data/data/com.termux/files/home/storage/shared/ Android Storage
+EOF
+
+# Set proot DISPLAY and aliases
+append_once "$proot_home/.bashrc" "export DISPLAY=:0"
+append_once "$proot_home/.bashrc" "alias ls='eza -lF --icons'"
+append_once "$proot_home/.bashrc" "alias cat='bat '"
+append_once "$proot_home/.bashrc" 'eval "$(starship init bash)"'
 
 # Set proot timezone
 timezone=$(getprop persist.sys.timezone)
-pd login debian --shared-tmp -- env DISPLAY=:0 rm /etc/localtime
-pd login debian --shared-tmp -- env DISPLAY=:0 cp /usr/share/zoneinfo/$timezone /etc/localtime
+if [ -n "$timezone" ]; then
+    proot_login rm -f /etc/localtime
+    proot_login cp "/usr/share/zoneinfo/$timezone" /etc/localtime
+else
+    print_status "warn" "Android timezone property is empty; leaving proot timezone unchanged"
+fi
 
 # Setup Hardware Acceleration in proot
-pd login debian --shared-tmp -- env DISPLAY=:0 wget https://github.com/phoenixbyrd/Termux_XFCE/raw/main/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
-pd login debian --shared-tmp -- env DISPLAY=:0 sudo apt install -y ./mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
+proot_login wget -O /tmp/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb https://github.com/phoenixbyrd/Termux_XFCE/raw/main/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
+proot_login apt install -y /tmp/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
 
-mkdir -p $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/$username/.config/
+mkdir -p "$proot_home/.config"
 
 # Download proot starship theme
-curl -o $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/$username/.config/starship.toml https://raw.githubusercontent.com/phoenixbyrd/Termux_XFCE/refs/heads/main/starship_proot.toml
-sed -i "s/phoenixbyrd/$username/" $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/$username/.config/starship.toml
+curl -o "$proot_home/.config/starship.toml" https://raw.githubusercontent.com/phoenixbyrd/Termux_XFCE/refs/heads/main/starship_proot.toml
+sed -i "s/phoenixbyrd/$username/" "$proot_home/.config/starship.toml"
 
 # Apply cursor theme
-cp -r $PREFIX/share/icons/dist-dark $PREFIX/var/lib/proot-distro/installed-rootfs/debian/usr/share/icons/dist-dark
-cat <<'EOF' > $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/$username/.Xresources
+rm -rf "$proot_rootfs/usr/share/icons/dist-dark"
+cp -r "$PREFIX/share/icons/dist-dark" "$proot_rootfs/usr/share/icons/dist-dark"
+cat <<'EOF' > "$proot_home/.Xresources"
 Xcursor.theme: dist-dark
 EOF
 
-wget https://github.com/phoenixbyrd/Termux_XFCE/raw/main/conky.tar.gz
+wget -O conky.tar.gz https://github.com/phoenixbyrd/Termux_XFCE/raw/main/conky.tar.gz
 tar -xvzf conky.tar.gz
-rm conky.tar.gz
-mv $HOME/.config/conky/ $PREFIX/var/lib/proot-distro/installed-rootfs/debian/home/$username/.config/
+rm -f conky.tar.gz
+rm -rf "$proot_home/.config/conky"
+mv "$HOME/.config/conky/" "$proot_home/.config/"
 
 # Conky
-cp $PREFIX/var/lib/proot-distro/installed-rootfs/debian/usr/share/applications/conky.desktop $HOME/.config/autostart/
+cp "$proot_rootfs/usr/share/applications/conky.desktop" "$HOME/.config/autostart/"
 sed -i 's|^Exec=.*$|Exec=prun conky -c .config/conky/Alterf/Alterf.conf|' $HOME/.config/autostart/conky.desktop
 
 # Flameshot
-cp $PREFIX/var/lib/proot-distro/installed-rootfs/debian/usr/share/applications/org.flameshot.Flameshot.desktop $HOME/.config/autostart/
+cp "$proot_rootfs/usr/share/applications/org.flameshot.Flameshot.desktop" "$HOME/.config/autostart/"
 sed -i 's|^Exec=.*$|Exec=prun flameshot|' $HOME/.config/autostart/org.flameshot.Flameshot.desktop
 
 chmod +x $HOME/.config/autostart/*.desktop
@@ -886,14 +1051,14 @@ echo -e "${GREEN}Available Commands:${NC}"
 echo -e "${YELLOW}start${NC}"
 echo -e "Launches the XFCE desktop environment with hardware acceleration enabled\n"
 
-echo -e "${YELLOW}debian${NC}"
-echo -e "Enters the Debian proot environment for installing additional aarch64 packages\n"
+echo -e "${YELLOW}$distro_alias${NC}"
+echo -e "Enters the $distro_label proot environment for installing additional aarch64 packages\n"
 
 echo -e "${YELLOW}prun${NC}"
-echo -e "Executes Debian proot applications directly from Termux\n"
+echo -e "Executes $distro_label proot applications directly from Termux\n"
 
 echo -e "${YELLOW}zrun${NC}"
-echo -e "Runs Debian applications with hardware acceleration enabled\n"
+echo -e "Runs $distro_label applications with hardware acceleration enabled\n"
 
 echo -e "${YELLOW}zrunhud${NC}"
 echo -e "Same as zrun but includes an FPS overlay for performance monitoring\n"
@@ -908,4 +1073,4 @@ echo -e "${YELLOW}Installation complete! Use 'start' to launch your desktop envi
 
 source $PREFIX/etc/bash.bashrc
 termux-reload-settings
-rm install_xfce_native.sh
+rm -f install_xfce_native.sh

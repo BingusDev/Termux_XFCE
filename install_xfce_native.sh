@@ -1004,8 +1004,8 @@ else
 fi
 
 # Setup Hardware Acceleration in proot
-proot_login wget -O /tmp/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb https://github.com/phoenixbyrd/Termux_XFCE/raw/main/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
-proot_login apt install -y /tmp/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
+run_step "Downloading Mesa Vulkan KGSL package" proot_login wget -O /tmp/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb https://github.com/phoenixbyrd/Termux_XFCE/raw/main/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
+run_step "Installing Mesa Vulkan KGSL package" proot_login apt install -y --allow-downgrades /tmp/mesa-vulkan-kgsl_24.1.0-devel-20240120_arm64.deb
 
 mkdir -p "$proot_home/.config"
 
